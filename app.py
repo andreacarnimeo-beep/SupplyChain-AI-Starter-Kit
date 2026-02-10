@@ -11,7 +11,9 @@ REQUIRED_COLS = [
     "stock_attuale",
     "criticita",
     "valore_unitario",
+    "unita_misura",
 ]
+
 
 def load_data(file):
     name = file.name.lower()
@@ -74,6 +76,16 @@ def compute_metrics(df):
     priority_map = {"alto": 0, "medio": 1, "basso": 2}
     out["priorita_sort"] = out["rischio_stockout"].map(priority_map).fillna(3)
     out = out.sort_values(["priorita_sort", "valore_unitario"], ascending=[True, False]).drop(columns=["priorita_sort"])
+
+    import math
+
+# ... dentro compute_metrics
+
+out["punto_riordino"] = (out["domanda_lt"] + out["scorta_sicurezza"]).apply(lambda x: math.ceil(x))
+out["qty_suggerita"] = (out["punto_riordino"] - out["stock_attuale"]).clip(lower=0).apply(lambda x: math.ceil(x))
+
+# prezzi a 2 decimali (solo formato numerico)
+out["valore_unitario"] = out["valore_unitario"].round(2)
 
     return out
 
