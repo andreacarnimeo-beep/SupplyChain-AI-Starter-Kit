@@ -1,3 +1,6 @@
+from openpyxl.utils import get_column_letter
+
+
 import math
 from io import BytesIO
 
@@ -73,6 +76,113 @@ def build_template_xlsx() -> bytes:
     # nota
     ws["I1"] = "NOTE"
     ws["I2"] = "consumo_mensile = quantità mensili (unità in colonna G)."
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+def build_results_xlsx(input_df: pd.DataFrame, output_df: pd.DataFrame) -> bytes:
+    wb = Workbook()
+
+    # ===== Sheet 1: Input =====
+    ws_in = wb.active
+    ws_in.title = "Input"
+
+    input_cols = ["articolo", "unita_misura", "consumo_mensile", "lead_time_giorni", "stock_attuale", "criticita", "valore_unitario"]
+    for c in input_cols:
+        if c not in input_df.columns:
+            input_df[c] = "pz" if c == "unita_misura" else ""
+
+    df_in = input_df[input_cols].copy()
+
+    ws_in.append(input_cols)
+    header_font = Font(bold=True)
+
+    for col_idx, col_name in enumerate(input_cols, start=1):
+        cell = ws_in.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # Data rows
+    for _, r in df_in.iterrows():
+        ws_in.append([
+            r["articolo"],
+            r["unita_misura"],
+            int(r["consumo_mensile"]) if pd.notna(r["consumo_mensile"]) else None,
+            int(r["lead_time_giorni"]) if pd.notna(r["lead_time_giorni"]) else None,
+            int(r["stock_attuale"]) if pd.notna(r["stock_attuale"]) else None,
+            str(r["criticita"]),
+            float(r["valore_unitario"]) if pd.notna(r["valore_unitario"]) else None,
+        ])
+
+    # Formati Input
+    for row in range(2, ws_in.max_row + 1):
+        ws_in[f"C{row}"].number_format = "0"     # consumo mensile intero
+        ws_in[f"D{row}"].number_format = "0"     # lead time intero
+        ws_in[f"E{row}"].number_format = "0"     # stock intero
+        ws_in[f"G{row}"].number_format = "0.00"  # prezzo 2 decimali
+
+    # Menu a tendina criticità (colonna F)
+    dv = DataValidation(type="list", formula1='"bassa,media,alta"', allow_blank=False)
+    ws_in.add_data_validation(dv)
+    dv.add(f"F2:F{max(2, ws_in.max_row)}")
+
+    # Larghezze colonne Input
+    widths_in = [14, 12, 18, 16, 14, 12, 16]
+    for i, w in enumerate(widths_in, start=1):
+        ws_in.column_dimensions[get_column_letter(i)].width = w
+
+    ws_in["I1"] = "NOTE"
+    ws_in["I2"] = "consumo_mensile = quantità mensili (unità in colonna B)."
+
+    # ===== Sheet 2: Output =====
+    ws_out = wb.create_sheet("Output")
+
+    output_cols = [
+        "articolo", "unita_misura", "consumo_mensile", "stock_attuale",
+        "domanda_lt", "scorta_sicurezza", "punto_riordino",
+        "rischio_stockout", "qty_suggerita", "valore_unitario"
+    ]
+    for c in output_cols:
+        if c not in output_df.columns:
+            output_df[c] = ""
+
+    df_out = output_df[output_cols].copy()
+
+    ws_out.append(output_cols)
+    for col_idx, col_name in enumerate(output_cols, start=1):
+        cell = ws_out.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    for _, r in df_out.iterrows():
+        ws_out.append([
+            r["articolo"],
+            r["unita_misura"],
+            int(r["consumo_mensile"]) if pd.notna(r["consumo_mensile"]) else None,
+            int(r["stock_attuale"]) if pd.notna(r["stock_attuale"]) else None,
+            float(r["domanda_lt"]) if pd.notna(r["domanda_lt"]) else None,
+            float(r["scorta_sicurezza"]) if pd.notna(r["scorta_sicurezza"]) else None,
+            int(r["punto_riordino"]) if pd.notna(r["punto_riordino"]) else None,
+            str(r["rischio_stockout"]),
+            int(r["qty_suggerita"]) if pd.notna(r["qty_suggerita"]) else None,
+            float(r["valore_unitario"]) if pd.notna(r["valore_unitario"]) else None,
+        ])
+
+    # Formati Output
+    for row in range(2, ws_out.max_row + 1):
+        ws_out[f"C{row}"].number_format = "0"     # consumo mensile
+        ws_out[f"D{row}"].number_format = "0"     # stock
+        ws_out[f"E{row}"].number_format = "0.00"  # domanda_lt
+        ws_out[f"F{row}"].number_format = "0.00"  # scorta_sicurezza
+        ws_out[f"G{row}"].number_format = "0"     # punto riordino intero
+        ws_out[f"I{row}"].number_format = "0"     # qty suggerita intero
+        ws_out[f"J{row}"].number_format = "0.00"  # prezzo 2 decimali
+
+    # Larghezze colonne Output
+    widths_out = [14, 12, 18, 14, 14, 16, 16, 16, 14, 16]
+    for i, w in enumerate(widths_out, start=1):
+        ws_out.column_dimensions[get_column_letter(i)].width = w
 
     buf = BytesIO()
     wb.save(buf)
