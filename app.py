@@ -150,3 +150,9 @@ st.text_area(
     height=220
 )
 
+st.download_button(
+    "Scarica risultati (CSV)",
+    metrics.to_csv(index=False).encode("utf-8"),
+    file_name="supplychain_ai_results.csv",
+    mime="text/csv"
+)
