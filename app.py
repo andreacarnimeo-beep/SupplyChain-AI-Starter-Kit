@@ -354,6 +354,13 @@ show_cols = [
 st.dataframe(metrics[show_cols], use_container_width=True)
 
 st.download_button(
+    "Scarica risultati (Excel .xlsx — Input + Output)",
+    data=build_results_xlsx(df, metrics),
+    file_name="SupplyChain_AI_Results.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+st.download_button(
     "Scarica risultati (CSV)",
     metrics.to_csv(index=False).encode("utf-8"),
     file_name="supplychain_ai_results.csv",
