@@ -1,50 +1,133 @@
+import math
+from io import BytesIO
+
 import pandas as pd
 import streamlit as st
+
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+from openpyxl.worksheet.datavalidation import DataValidation
+
 
 st.set_page_config(page_title="SupplyChain AI Starter Kit", layout="wide")
 st.title("SupplyChain AI Starter Kit — PMI")
 
+# Colonne minime richieste (unita_misura verrà aggiunta se manca)
 REQUIRED_COLS = [
     "articolo",
-    "consumo_mensile",
+    "consumo_mensile",     # quantità MENSILI
     "lead_time_giorni",
     "stock_attuale",
     "criticita",
-    "valore_unitario",
-    "unita_misura",
+    "valore_unitario",     # € con 2 decimali
 ]
 
+OPTIONAL_COLS_DEFAULTS = {
+    "unita_misura": "pz"
+}
 
-def load_data(file):
+
+def build_template_xlsx() -> bytes:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Dati"
+
+    headers = [
+        "articolo",
+        "consumo_mensile",     # quantità MENSILI
+        "lead_time_giorni",
+        "stock_attuale",
+        "criticita",           # bassa/media/alta
+        "valore_unitario",     # € con 2 decimali
+        "unita_misura",        # es. pz, kg, lt
+    ]
+    ws.append(headers)
+
+    # Header in grassetto + centrato
+    header_font = Font(bold=True)
+    for col_idx in range(1, len(headers) + 1):
+        cell = ws.cell(row=1, column=col_idx)
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+
+    # larghezze
+    widths = {"A": 14, "B": 18, "C": 16, "D": 14, "E": 12, "F": 16, "G": 12}
+    for col, w in widths.items():
+        ws.column_dimensions[col].width = w
+
+    # riga esempio (utile al cliente)
+    ws.append(["A001", 100, 10, 20, "alta", 10.50, "pz"])
+
+    # formati numerici fino a 200 righe
+    for r in range(2, 201):
+        ws[f"B{r}"].number_format = "0"     # consumo mensile intero
+        ws[f"C{r}"].number_format = "0"     # lead time intero
+        ws[f"D{r}"].number_format = "0"     # stock intero
+        ws[f"F{r}"].number_format = "0.00"  # prezzo 2 decimali
+
+    # menu a tendina criticità
+    dv = DataValidation(type="list", formula1='"bassa,media,alta"', allow_blank=False)
+    ws.add_data_validation(dv)
+    dv.add("E2:E200")
+
+    # nota
+    ws["I1"] = "NOTE"
+    ws["I2"] = "consumo_mensile = quantità mensili (unità in colonna G)."
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def load_data(file) -> pd.DataFrame:
     name = file.name.lower()
 
     if name.endswith(".csv"):
-        # Prova a leggere con separatore automatico (gestisce ; e ,)
+        # Gestisce separatori ; e , automaticamente
         df = pd.read_csv(file, sep=None, engine="python")
     else:
         df = pd.read_excel(file)
 
-    # pulizia nomi colonne
+    # pulizia colonne
     df.columns = [str(c).strip().lower() for c in df.columns]
-
-    # rimuove eventuali colonne vuote tipo "unnamed: 0"
-    df = df.loc[:, ~df.columns.str.contains("^unnamed")]
+    # rimuove eventuali colonne tipo "Unnamed: 0"
+    df = df.loc[:, ~df.columns.str.contains(r"^unnamed", case=False, na=False)]
 
     return df
 
-def validate_columns(df):
+
+def validate_columns(df: pd.DataFrame):
     return [c for c in REQUIRED_COLS if c not in df.columns]
 
-def compute_metrics(df):
+
+def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
-    # consumo giornaliero (approssimazione su 30 giorni)
-    out["consumo_giornaliero"] = out["consumo_mensile"] / 30.0
+    # aggiunge colonne opzionali se mancano
+    for col, default in OPTIONAL_COLS_DEFAULTS.items():
+        if col not in out.columns:
+            out[col] = default
 
-    # domanda durante lead time
+    # pulizia/normalizzazione criticità
+    out["criticita"] = out["criticita"].astype(str).str.strip().str.lower()
+
+    # numeric coercion (evita crash se arriva testo)
+    for col in ["consumo_mensile", "lead_time_giorni", "stock_attuale", "valore_unitario"]:
+        out[col] = pd.to_numeric(out[col], errors="coerce")
+
+    # drop righe con valori fondamentali mancanti
+    out = out.dropna(subset=["articolo", "consumo_mensile", "lead_time_giorni", "stock_attuale", "criticita", "valore_unitario"])
+
+    return out
+
+
+def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    # consumo giornaliero stimato (mese = 30 giorni)
+    out["consumo_giornaliero"] = out["consumo_mensile"] / 30.0
     out["domanda_lt"] = out["consumo_giornaliero"] * out["lead_time_giorni"]
 
-    # scorta di sicurezza "semplice" in base alla criticità
     def safety_factor(c):
         c = str(c).strip().lower()
         if c == "alta":
@@ -56,10 +139,10 @@ def compute_metrics(df):
     out["fattore_ss"] = out["criticita"].apply(safety_factor)
     out["scorta_sicurezza"] = out["domanda_lt"] * out["fattore_ss"]
 
-    # punto riordino
-    out["punto_riordino"] = (out["domanda_lt"] + out["scorta_sicurezza"]).round(0)
+    # arrotondamenti: all’intero superiore
+    out["punto_riordino"] = (out["domanda_lt"] + out["scorta_sicurezza"]).apply(lambda x: int(math.ceil(x)))
+    out["qty_suggerita"] = (out["punto_riordino"] - out["stock_attuale"]).clip(lower=0).apply(lambda x: int(math.ceil(x)))
 
-    # rischio stockout (semplice)
     def risk(row):
         if row["stock_attuale"] < row["domanda_lt"]:
             return "alto"
@@ -69,102 +152,107 @@ def compute_metrics(df):
 
     out["rischio_stockout"] = out.apply(risk, axis=1)
 
-    # quantità suggerita per tornare al punto di riordino (approccio prudente)
-    out["qty_suggerita"] = (out["punto_riordino"] - out["stock_attuale"]).clip(lower=0).round(0)
+    # prezzi a 2 decimali
+    out["valore_unitario"] = out["valore_unitario"].round(2)
 
-    # ordinamento per priorità (alto->medio->basso)
+    # ordinamento priorità (alto -> medio -> basso), poi per valore unitario alto
     priority_map = {"alto": 0, "medio": 1, "basso": 2}
     out["priorita_sort"] = out["rischio_stockout"].map(priority_map).fillna(3)
     out = out.sort_values(["priorita_sort", "valore_unitario"], ascending=[True, False]).drop(columns=["priorita_sort"])
 
-    import math
-
-# ... dentro compute_metrics
-
-out["punto_riordino"] = (out["domanda_lt"] + out["scorta_sicurezza"]).apply(lambda x: math.ceil(x))
-out["qty_suggerita"] = (out["punto_riordino"] - out["stock_attuale"]).clip(lower=0).apply(lambda x: math.ceil(x))
-
-# prezzi a 2 decimali (solo formato numerico)
-out["valore_unitario"] = out["valore_unitario"].round(2)
-
     return out
 
-# ✏️ MODIFICA 1 — Prompt generator
-def genera_prompt(row):
+
+def genera_prompt(row) -> str:
     return f"""
 Agisci come responsabile supply chain di una PMI.
 
 Articolo: {row['articolo']}
-Consumo mensile: {row['consumo_mensile']}
-Lead time (giorni): {row['lead_time_giorni']}
-Stock attuale: {row['stock_attuale']}
+Consumo mensile ({row.get('unita_misura','pz')}): {int(row['consumo_mensile'])}
+Lead time (giorni): {int(row['lead_time_giorni'])}
+Stock attuale ({row.get('unita_misura','pz')}): {int(row['stock_attuale'])}
 Criticità: {row['criticita']}
-Valore unitario: {row['valore_unitario']}
+Valore unitario (€): {row['valore_unitario']:.2f}
 
-Analizza la situazione e indica:
-- rischio stockout
+Calcoli app:
+- Punto riordino ({row.get('unita_misura','pz')}): {int(row['punto_riordino'])}
+- Qty suggerita ({row.get('unita_misura','pz')}): {int(row['qty_suggerita'])}
+- Rischio stockout: {row['rischio_stockout']}
+
+Analizza e indica in modo pratico:
 - se riordinare o no
-- quantità consigliata
-- motivazione pratica e semplice
+- quantità consigliata e perché
+- azioni immediate (es. accelerare consegna, alternativa fornitore, safety stock)
 """
 
-# Sidebar upload
+
+# ===== UI =====
+
+st.download_button(
+    "Scarica template Excel (pronto da compilare)",
+    data=build_template_xlsx(),
+    file_name="SupplyChain_AI_Starter_Kit_Template.xlsx",
+    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+)
+
+st.caption("Nel template: intestazioni in grassetto, criticità con menu a tendina, prezzi a 2 decimali, consumo_mensile = quantità mensili.")
+
 st.sidebar.header("Carica file dati")
 uploaded = st.sidebar.file_uploader("CSV o Excel", type=["csv", "xlsx", "xls"])
 
-# Mostra esempio (utile per PMI e per evitare errori)
 st.subheader("Esempio di dati (formato richiesto)")
 example_df = pd.DataFrame(
     [
-        {"articolo": "A001", "consumo_mensile": 100, "lead_time_giorni": 10, "stock_attuale": 20, "criticita": "alta", "valore_unitario": 10.5},
-        {"articolo": "A002", "consumo_mensile": 50,  "lead_time_giorni": 20, "stock_attuale": 40, "criticita": "media","valore_unitario": 5.0},
-        {"articolo": "A003", "consumo_mensile": 200, "lead_time_giorni": 5,  "stock_attuale": 10, "criticita": "bassa","valore_unitario": 15.0},
+        {"articolo": "A001", "consumo_mensile": 100, "lead_time_giorni": 10, "stock_attuale": 20, "criticita": "alta", "valore_unitario": 10.50, "unita_misura": "pz"},
+        {"articolo": "A002", "consumo_mensile": 50,  "lead_time_giorni": 20, "stock_attuale": 40, "criticita": "media", "valore_unitario": 5.00,  "unita_misura": "pz"},
+        {"articolo": "A003", "consumo_mensile": 200, "lead_time_giorni": 5,  "stock_attuale": 10, "criticita": "bassa", "valore_unitario": 15.00, "unita_misura": "pz"},
     ]
 )
 st.dataframe(example_df, use_container_width=True)
 
-st.info("Carica un file con colonne: " + ", ".join(REQUIRED_COLS))
+st.info("Colonne minime richieste: " + ", ".join(REQUIRED_COLS) + " | Colonna consigliata: unita_misura (se manca uso 'pz').")
 
 if not uploaded:
     st.stop()
 
 df = load_data(uploaded)
 missing = validate_columns(df)
-
 if missing:
     st.error(f"Colonne mancanti: {missing}")
+    st.stop()
+
+df = normalize_df(df)
+if df.empty:
+    st.error("Il file è stato letto ma non ci sono righe valide (controlla numeri e intestazioni).")
     st.stop()
 
 metrics = compute_metrics(df)
 
 st.subheader("Priorità riordino e rischio stockout")
-st.dataframe(
-    metrics[
-        ["articolo", "stock_attuale", "domanda_lt", "scorta_sicurezza", "punto_riordino", "rischio_stockout", "qty_suggerita"]
-    ],
-    use_container_width=True
-)
-
-# ✏️ MODIFICA 2 — UI prompt generator
-st.subheader("Prompt AI per analisi decisionale")
-
-articolo_sel = st.selectbox(
-    "Seleziona articolo",
-    metrics["articolo"].astype(str).tolist()
-)
-
-row = metrics[metrics["articolo"].astype(str) == articolo_sel].iloc[0]
-prompt = genera_prompt(row)
-
-st.text_area(
-    "Prompt pronto (copia e incolla in ChatGPT)",
-    prompt,
-    height=220
-)
+show_cols = [
+    "articolo",
+    "unita_misura",
+    "consumo_mensile",
+    "stock_attuale",
+    "domanda_lt",
+    "scorta_sicurezza",
+    "punto_riordino",
+    "rischio_stockout",
+    "qty_suggerita",
+    "valore_unitario",
+]
+st.dataframe(metrics[show_cols], use_container_width=True)
 
 st.download_button(
     "Scarica risultati (CSV)",
     metrics.to_csv(index=False).encode("utf-8"),
     file_name="supplychain_ai_results.csv",
-    mime="text/csv"
+    mime="text/csv",
 )
+
+st.subheader("Prompt AI per analisi decisionale")
+articolo_sel = st.selectbox("Seleziona articolo", metrics["articolo"].astype(str).tolist())
+row = metrics[metrics["articolo"].astype(str) == str(articolo_sel)].iloc[0]
+prompt = genera_prompt(row)
+
+st.text_area("Prompt pronto (copia e incolla in ChatGPT)", prompt, height=260)
