@@ -14,11 +14,20 @@ REQUIRED_COLS = [
 ]
 
 def load_data(file):
-    if file.name.lower().endswith(".csv"):
-        df = pd.read_csv(file)
+    name = file.name.lower()
+
+    if name.endswith(".csv"):
+        # Prova a leggere con separatore automatico (gestisce ; e ,)
+        df = pd.read_csv(file, sep=None, engine="python")
     else:
         df = pd.read_excel(file)
-    df.columns = [c.strip().lower() for c in df.columns]
+
+    # pulizia nomi colonne
+    df.columns = [str(c).strip().lower() for c in df.columns]
+
+    # rimuove eventuali colonne vuote tipo "unnamed: 0"
+    df = df.loc[:, ~df.columns.str.contains("^unnamed")]
+
     return df
 
 def validate_columns(df):
