@@ -1,375 +1,297 @@
-from openpyxl.utils import get_column_letter
-
-
 import math
+import datetime as dt
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
+from PIL import Image
 
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.worksheet.datavalidation import DataValidation
+from openpyxl.utils import get_column_letter
 
 
+# =========================
+# CONFIG + STYLE
+# =========================
 st.set_page_config(page_title="SupplyChain AI Starter Kit", layout="wide")
-st.title("SupplyChain AI Starter Kit — PMI")
 
-# Colonne minime richieste (unita_misura verrà aggiunta se manca)
+st.markdown(
+    """
+<style>
+.block-container {padding-top: 2rem;}
+.sc-card {
+  background: white;
+  border: 1px solid rgba(0,0,0,0.06);
+  border-radius: 16px;
+  padding: 18px;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.06);
+}
+.badge {
+  display:inline-block; padding: 4px 12px; border-radius: 999px;
+  background: rgba(30,136,229,0.12); color: #1e88e5;
+  font-size: 0.85rem; border: 1px solid rgba(30,136,229,0.2);
+}
+.small {color: rgba(0,0,0,0.6); font-size: 0.9rem;}
+</style>
+""",
+    unsafe_allow_html=True,
+)
+
+
+# =========================
+# COSTANTI
+# =========================
 REQUIRED_COLS = [
     "articolo",
-    "consumo_mensile",     # quantità MENSILI
+    "consumo_mensile",
     "lead_time_giorni",
     "stock_attuale",
     "criticita",
-    "valore_unitario",     # € con 2 decimali
+    "valore_unitario",
 ]
-
-OPTIONAL_COLS_DEFAULTS = {
-    "unita_misura": "pz"
-}
+OPTIONAL_DEFAULTS = {"unita_misura": "pz"}
 
 
-def build_template_xlsx() -> bytes:
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Dati"
-
-    headers = [
-        "articolo",
-        "consumo_mensile",     # quantità MENSILI
-        "lead_time_giorni",
-        "stock_attuale",
-        "criticita",           # bassa/media/alta
-        "valore_unitario",     # € con 2 decimali
-        "unita_misura",        # es. pz, kg, lt
-    ]
-    ws.append(headers)
-
-    # Header in grassetto + centrato
-    header_font = Font(bold=True)
-    for col_idx in range(1, len(headers) + 1):
-        cell = ws.cell(row=1, column=col_idx)
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    # larghezze
-    widths = {"A": 14, "B": 18, "C": 16, "D": 14, "E": 12, "F": 16, "G": 12}
-    for col, w in widths.items():
-        ws.column_dimensions[col].width = w
-
-    # riga esempio (utile al cliente)
-    ws.append(["A001", 100, 10, 20, "alta", 10.50, "pz"])
-
-    # formati numerici fino a 200 righe
-    for r in range(2, 201):
-        ws[f"B{r}"].number_format = "0"     # consumo mensile intero
-        ws[f"C{r}"].number_format = "0"     # lead time intero
-        ws[f"D{r}"].number_format = "0"     # stock intero
-        ws[f"F{r}"].number_format = "0.00"  # prezzo 2 decimali
-
-    # menu a tendina criticità
-    dv = DataValidation(type="list", formula1='"bassa,media,alta"', allow_blank=False)
-    ws.add_data_validation(dv)
-    dv.add("E2:E200")
-
-    # nota
-    ws["I1"] = "NOTE"
-    ws["I2"] = "consumo_mensile = quantità mensili (unità in colonna G)."
-
-    buf = BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
-
-def build_results_xlsx(input_df: pd.DataFrame, output_df: pd.DataFrame) -> bytes:
-    wb = Workbook()
-
-    # ===== Sheet 1: Input =====
-    ws_in = wb.active
-    ws_in.title = "Input"
-
-    input_cols = ["articolo", "unita_misura", "consumo_mensile", "lead_time_giorni", "stock_attuale", "criticita", "valore_unitario"]
-    for c in input_cols:
-        if c not in input_df.columns:
-            input_df[c] = "pz" if c == "unita_misura" else ""
-
-    df_in = input_df[input_cols].copy()
-
-    ws_in.append(input_cols)
-    header_font = Font(bold=True)
-
-    for col_idx, col_name in enumerate(input_cols, start=1):
-        cell = ws_in.cell(row=1, column=col_idx)
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    # Data rows
-    for _, r in df_in.iterrows():
-        ws_in.append([
-            r["articolo"],
-            r["unita_misura"],
-            int(r["consumo_mensile"]) if pd.notna(r["consumo_mensile"]) else None,
-            int(r["lead_time_giorni"]) if pd.notna(r["lead_time_giorni"]) else None,
-            int(r["stock_attuale"]) if pd.notna(r["stock_attuale"]) else None,
-            str(r["criticita"]),
-            float(r["valore_unitario"]) if pd.notna(r["valore_unitario"]) else None,
-        ])
-
-    # Formati Input
-    for row in range(2, ws_in.max_row + 1):
-        ws_in[f"C{row}"].number_format = "0"     # consumo mensile intero
-        ws_in[f"D{row}"].number_format = "0"     # lead time intero
-        ws_in[f"E{row}"].number_format = "0"     # stock intero
-        ws_in[f"G{row}"].number_format = "0.00"  # prezzo 2 decimali
-
-    # Menu a tendina criticità (colonna F)
-    dv = DataValidation(type="list", formula1='"bassa,media,alta"', allow_blank=False)
-    ws_in.add_data_validation(dv)
-    dv.add(f"F2:F{max(2, ws_in.max_row)}")
-
-    # Larghezze colonne Input
-    widths_in = [14, 12, 18, 16, 14, 12, 16]
-    for i, w in enumerate(widths_in, start=1):
-        ws_in.column_dimensions[get_column_letter(i)].width = w
-
-    ws_in["I1"] = "NOTE"
-    ws_in["I2"] = "consumo_mensile = quantità mensili (unità in colonna B)."
-
-    # ===== Sheet 2: Output =====
-    ws_out = wb.create_sheet("Output")
-
-    output_cols = [
-        "articolo", "unita_misura", "consumo_mensile", "stock_attuale",
-        "domanda_lt", "scorta_sicurezza", "punto_riordino",
-        "rischio_stockout", "qty_suggerita", "valore_unitario"
-    ]
-    for c in output_cols:
-        if c not in output_df.columns:
-            output_df[c] = ""
-
-    df_out = output_df[output_cols].copy()
-
-    ws_out.append(output_cols)
-    for col_idx, col_name in enumerate(output_cols, start=1):
-        cell = ws_out.cell(row=1, column=col_idx)
-        cell.font = header_font
-        cell.alignment = Alignment(horizontal="center", vertical="center")
-
-    for _, r in df_out.iterrows():
-        ws_out.append([
-            r["articolo"],
-            r["unita_misura"],
-            int(r["consumo_mensile"]) if pd.notna(r["consumo_mensile"]) else None,
-            int(r["stock_attuale"]) if pd.notna(r["stock_attuale"]) else None,
-            float(r["domanda_lt"]) if pd.notna(r["domanda_lt"]) else None,
-            float(r["scorta_sicurezza"]) if pd.notna(r["scorta_sicurezza"]) else None,
-            int(r["punto_riordino"]) if pd.notna(r["punto_riordino"]) else None,
-            str(r["rischio_stockout"]),
-            int(r["qty_suggerita"]) if pd.notna(r["qty_suggerita"]) else None,
-            float(r["valore_unitario"]) if pd.notna(r["valore_unitario"]) else None,
-        ])
-
-    # Formati Output
-    for row in range(2, ws_out.max_row + 1):
-        ws_out[f"C{row}"].number_format = "0"     # consumo mensile
-        ws_out[f"D{row}"].number_format = "0"     # stock
-        ws_out[f"E{row}"].number_format = "0.00"  # domanda_lt
-        ws_out[f"F{row}"].number_format = "0.00"  # scorta_sicurezza
-        ws_out[f"G{row}"].number_format = "0"     # punto riordino intero
-        ws_out[f"I{row}"].number_format = "0"     # qty suggerita intero
-        ws_out[f"J{row}"].number_format = "0.00"  # prezzo 2 decimali
-
-    # Larghezze colonne Output
-    widths_out = [14, 12, 18, 14, 14, 16, 16, 16, 14, 16]
-    for i, w in enumerate(widths_out, start=1):
-        ws_out.column_dimensions[get_column_letter(i)].width = w
-
-    buf = BytesIO()
-    wb.save(buf)
-    return buf.getvalue()
+# =========================
+# FUNZIONI BASE
+# =========================
+def business_days_in_month(year: int, month: int) -> int:
+    start = dt.date(year, month, 1)
+    end = dt.date(year + 1, 1, 1) if month == 12 else dt.date(year, month + 1, 1)
+    cur, count = start, 0
+    while cur < end:
+        if cur.weekday() < 5:
+            count += 1
+        cur += dt.timedelta(days=1)
+    return count
 
 
 def load_data(file) -> pd.DataFrame:
-    name = file.name.lower()
-
-    if name.endswith(".csv"):
-        # Gestisce separatori ; e , automaticamente
+    if file.name.lower().endswith(".csv"):
         df = pd.read_csv(file, sep=None, engine="python")
     else:
         df = pd.read_excel(file)
-
-    # pulizia colonne
     df.columns = [str(c).strip().lower() for c in df.columns]
-    # rimuove eventuali colonne tipo "Unnamed: 0"
-    df = df.loc[:, ~df.columns.str.contains(r"^unnamed", case=False, na=False)]
-
+    df = df.loc[:, ~df.columns.str.contains("^unnamed", case=False)]
     return df
 
 
-def validate_columns(df: pd.DataFrame):
+def validate_columns(df):
     return [c for c in REQUIRED_COLS if c not in df.columns]
 
 
-def normalize_df(df: pd.DataFrame) -> pd.DataFrame:
+def normalize_df(df):
     out = df.copy()
+    for c, v in OPTIONAL_DEFAULTS.items():
+        if c not in out.columns:
+            out[c] = v
 
-    # aggiunge colonne opzionali se mancano
-    for col, default in OPTIONAL_COLS_DEFAULTS.items():
-        if col not in out.columns:
-            out[col] = default
+    out["criticita"] = out["criticita"].astype(str).str.lower().str.strip()
+    out["criticita"] = out["criticita"].replace(
+        {"alto": "alta", "medio": "media", "basso": "bassa"}
+    )
 
-    # pulizia/normalizzazione criticità
-    out["criticita"] = out["criticita"].astype(str).str.strip().str.lower()
+    for c in ["consumo_mensile", "lead_time_giorni", "stock_attuale", "valore_unitario"]:
+        out[c] = pd.to_numeric(out[c], errors="coerce")
 
-    # numeric coercion (evita crash se arriva testo)
-    for col in ["consumo_mensile", "lead_time_giorni", "stock_attuale", "valore_unitario"]:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-
-    # drop righe con valori fondamentali mancanti
-    out = out.dropna(subset=["articolo", "consumo_mensile", "lead_time_giorni", "stock_attuale", "criticita", "valore_unitario"])
-
+    out = out.dropna(subset=REQUIRED_COLS)
+    out["unita_misura"] = out["unita_misura"].astype(str).str.strip()
+    out.loc[out["unita_misura"] == "", "unita_misura"] = "pz"
     return out
 
 
-def compute_metrics(df: pd.DataFrame) -> pd.DataFrame:
+def compute_metrics(df, workdays):
     out = df.copy()
-
-    # consumo giornaliero stimato (mese = 30 giorni)
-    out["consumo_giornaliero"] = out["consumo_mensile"] / 30.0
+    out["consumo_giornaliero"] = out["consumo_mensile"] / workdays
     out["domanda_lt"] = out["consumo_giornaliero"] * out["lead_time_giorni"]
 
-    def safety_factor(c):
-        c = str(c).strip().lower()
-        if c == "alta":
-            return 0.50
-        if c == "media":
-            return 0.30
-        return 0.15
+    def sf(c):
+        return 0.5 if c == "alta" else 0.3 if c == "media" else 0.15
 
-    out["fattore_ss"] = out["criticita"].apply(safety_factor)
-    out["scorta_sicurezza"] = out["domanda_lt"] * out["fattore_ss"]
+    out["scorta_sicurezza"] = out["domanda_lt"] * out["criticita"].apply(sf)
+    out["punto_riordino"] = (out["domanda_lt"] + out["scorta_sicurezza"]).apply(lambda x: math.ceil(x))
+    out["qty_suggerita"] = (out["punto_riordino"] - out["stock_attuale"]).clip(lower=0).apply(lambda x: math.ceil(x))
 
-    # arrotondamenti: all’intero superiore
-    out["punto_riordino"] = (out["domanda_lt"] + out["scorta_sicurezza"]).apply(lambda x: int(math.ceil(x)))
-    out["qty_suggerita"] = (out["punto_riordino"] - out["stock_attuale"]).clip(lower=0).apply(lambda x: int(math.ceil(x)))
-
-    def risk(row):
-        if row["stock_attuale"] < row["domanda_lt"]:
+    def risk(r):
+        if r["stock_attuale"] < r["domanda_lt"]:
             return "alto"
-        if row["stock_attuale"] < row["punto_riordino"]:
+        if r["stock_attuale"] < r["punto_riordino"]:
             return "medio"
         return "basso"
 
     out["rischio_stockout"] = out.apply(risk, axis=1)
-
-    # prezzi a 2 decimali
     out["valore_unitario"] = out["valore_unitario"].round(2)
-
-    # ordinamento priorità (alto -> medio -> basso), poi per valore unitario alto
-    priority_map = {"alto": 0, "medio": 1, "basso": 2}
-    out["priorita_sort"] = out["rischio_stockout"].map(priority_map).fillna(3)
-    out = out.sort_values(["priorita_sort", "valore_unitario"], ascending=[True, False]).drop(columns=["priorita_sort"])
-
-    return out
+    return out.sort_values(["rischio_stockout", "valore_unitario"], ascending=[True, False])
 
 
-def genera_prompt(row) -> str:
+def genera_prompt(row, year, month, workdays):
+    um = row["unita_misura"]
     return f"""
 Agisci come responsabile supply chain di una PMI.
 
-Articolo: {row['articolo']}
-Consumo mensile ({row.get('unita_misura','pz')}): {int(row['consumo_mensile'])}
+Mese: {month:02d}/{year} (giorni lavorativi: {workdays})
+Articolo: {row['articolo']} ({um})
+
+Consumo mensile: {int(row['consumo_mensile'])}
+Stock attuale: {int(row['stock_attuale'])}
 Lead time (giorni): {int(row['lead_time_giorni'])}
-Stock attuale ({row.get('unita_misura','pz')}): {int(row['stock_attuale'])}
 Criticità: {row['criticita']}
 Valore unitario (€): {row['valore_unitario']:.2f}
 
-Calcoli app:
-- Punto riordino ({row.get('unita_misura','pz')}): {int(row['punto_riordino'])}
-- Qty suggerita ({row.get('unita_misura','pz')}): {int(row['qty_suggerita'])}
-- Rischio stockout: {row['rischio_stockout']}
+Punto di riordino: {int(row['punto_riordino'])}
+Quantità suggerita: {int(row['qty_suggerita'])}
+Rischio stockout: {row['rischio_stockout']}
 
-Analizza e indica in modo pratico:
-- se riordinare o no
-- quantità consigliata e perché
-- azioni immediate (es. accelerare consegna, alternativa fornitore, safety stock)
-"""
+Spiega se riordinare o no, perché, e suggerisci 2 azioni operative.
+""".strip()
 
 
-# ===== UI =====
+# =========================
+# HERO SECTION (TESTO + IMMAGINE)
+# =========================
+col1, col2 = st.columns([1.2, 1])
+
+with col1:
+    st.markdown(
+        """
+<div class="sc-card">
+  <span class="badge">Decision Support • AI Ready</span>
+  <h1>SupplyChain AI Starter Kit</h1>
+  <p class="small">
+    Strumento decisionale per Responsabili Logistica e Supply Chain.
+    Carica i dati → ottieni priorità di riordino → esporta Excel → usa l’AI per decidere meglio.
+  </p>
+  <ul>
+    <li>Punto di riordino e rischio stockout</li>
+    <li>Quantità suggerite arrotondate</li>
+    <li>Excel professionale (Input + Output)</li>
+    <li>Prompt AI pronti all’uso</li>
+  </ul>
+</div>
+""",
+        unsafe_allow_html=True,
+    )
+
+with col2:
+    img = Image.open("assets/logistic_manager_future.png")
+    st.markdown('<div class="sc-card">', unsafe_allow_html=True)
+    st.image(img, use_container_width=True, caption="Il Logistic Manager del Futuro")
+    st.markdown('<p class="small">Immagine originale — uso libero</p>', unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
+# =========================
+# TEMPLATE DOWNLOAD
+# =========================
+def build_template_xlsx():
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Dati"
+    headers = ["articolo","consumo_mensile","lead_time_giorni","stock_attuale","criticita","valore_unitario","unita_misura"]
+    ws.append(headers)
+    ws.append(["A001",100,10,20,"alta",10.50,"pz"])
+
+    header_fill = PatternFill("solid", fgColor="D9EAF7")
+    for c in range(1, len(headers)+1):
+        ws.cell(1,c).font = Font(bold=True)
+        ws.cell(1,c).fill = header_fill
+        ws.cell(1,c).alignment = Alignment(horizontal="center")
+
+    ws.freeze_panes = "A2"
+    ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}1"
+
+    dv = DataValidation(type="list", formula1='"bassa,media,alta"', allow_blank=False)
+    ws.add_data_validation(dv)
+    dv.add("E2:E200")
+
+    for col in ["B","C","D"]:
+        for r in range(2,201):
+            ws[f"{col}{r}"].number_format = "0"
+    for r in range(2,201):
+        ws[f"F{r}"].number_format = "0.00"
+
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 
 st.download_button(
-    "Scarica template Excel (pronto da compilare)",
+    "⬇️ Scarica template Excel",
     data=build_template_xlsx(),
-    file_name="SupplyChain_AI_Starter_Kit_Template.xlsx",
+    file_name="SupplyChain_AI_Template.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("Nel template: intestazioni in grassetto, criticità con menu a tendina, prezzi a 2 decimali, consumo_mensile = quantità mensili.")
 
-st.sidebar.header("Carica file dati")
-uploaded = st.sidebar.file_uploader("CSV o Excel", type=["csv", "xlsx", "xls"])
+# =========================
+# SIDEBAR + UPLOAD
+# =========================
+st.sidebar.header("Impostazioni")
+today = dt.date.today()
+year = int(st.sidebar.number_input("Anno", 2020, 2100, today.year))
+month = int(st.sidebar.selectbox("Mese", list(range(1,13)), index=today.month-1))
+workdays = business_days_in_month(year, month)
+st.sidebar.caption(f"Giorni lavorativi: {workdays}")
 
-st.subheader("Esempio di dati (formato richiesto)")
-example_df = pd.DataFrame(
-    [
-        {"articolo": "A001", "consumo_mensile": 100, "lead_time_giorni": 10, "stock_attuale": 20, "criticita": "alta", "valore_unitario": 10.50, "unita_misura": "pz"},
-        {"articolo": "A002", "consumo_mensile": 50,  "lead_time_giorni": 20, "stock_attuale": 40, "criticita": "media", "valore_unitario": 5.00,  "unita_misura": "pz"},
-        {"articolo": "A003", "consumo_mensile": 200, "lead_time_giorni": 5,  "stock_attuale": 10, "criticita": "bassa", "valore_unitario": 15.00, "unita_misura": "pz"},
-    ]
-)
-st.dataframe(example_df, use_container_width=True)
-
-st.info("Colonne minime richieste: " + ", ".join(REQUIRED_COLS) + " | Colonna consigliata: unita_misura (se manca uso 'pz').")
-
+uploaded = st.sidebar.file_uploader("Carica CSV o Excel", type=["csv","xlsx","xls"])
 if not uploaded:
     st.stop()
 
-df = load_data(uploaded)
-missing = validate_columns(df)
+
+# =========================
+# PROCESSING
+# =========================
+df_raw = load_data(uploaded)
+missing = validate_columns(df_raw)
 if missing:
     st.error(f"Colonne mancanti: {missing}")
     st.stop()
 
-df = normalize_df(df)
-if df.empty:
-    st.error("Il file è stato letto ma non ci sono righe valide (controlla numeri e intestazioni).")
-    st.stop()
-
-metrics = compute_metrics(df)
+df = normalize_df(df_raw)
+metrics = compute_metrics(df, workdays)
 
 st.subheader("Priorità riordino e rischio stockout")
-show_cols = [
-    "articolo",
-    "unita_misura",
-    "consumo_mensile",
-    "stock_attuale",
-    "domanda_lt",
-    "scorta_sicurezza",
-    "punto_riordino",
-    "rischio_stockout",
-    "qty_suggerita",
-    "valore_unitario",
-]
-st.dataframe(metrics[show_cols], use_container_width=True)
+st.dataframe(metrics, use_container_width=True)
+
+
+# =========================
+# EXCEL OUTPUT
+# =========================
+def build_results_xlsx(df, metrics):
+    wb = Workbook()
+
+    for name, data in {"Input": df, "Output": metrics}.items():
+        ws = wb.create_sheet(name)
+        ws.append(list(data.columns))
+        for c in range(1, len(data.columns)+1):
+            ws.cell(1,c).font = Font(bold=True)
+            ws.cell(1,c).fill = PatternFill("solid", fgColor="D9EAF7")
+            ws.freeze_panes = "A2"
+            ws.auto_filter.ref = f"A1:{get_column_letter(len(data.columns))}1"
+        for _, r in data.iterrows():
+            ws.append(r.tolist())
+
+    wb.remove(wb["Sheet"])
+    buf = BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
 
 st.download_button(
-    "Scarica risultati (Excel .xlsx — Input + Output)",
+    "⬇️ Scarica risultati Excel (Input + Output)",
     data=build_results_xlsx(df, metrics),
     file_name="SupplyChain_AI_Results.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.download_button(
-    "Scarica risultati (CSV)",
-    metrics.to_csv(index=False).encode("utf-8"),
-    file_name="supplychain_ai_results.csv",
-    mime="text/csv",
-)
 
-st.subheader("Prompt AI per analisi decisionale")
-articolo_sel = st.selectbox("Seleziona articolo", metrics["articolo"].astype(str).tolist())
-row = metrics[metrics["articolo"].astype(str) == str(articolo_sel)].iloc[0]
-prompt = genera_prompt(row)
+# =========================
+# PROMPT AI
+# =========================
+st.subheader("Prompt AI decisionale")
+art = st.selectbox("Seleziona articolo", metrics["articolo"].astype(str))
+row = metrics[metrics["articolo"].astype(str)==art].iloc[0]
+st.text_area("Prompt pronto", genera_prompt(row, year, month, workdays), height=260)
 
-st.text_area("Prompt pronto (copia e incolla in ChatGPT)", prompt, height=260)
