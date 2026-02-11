@@ -294,4 +294,3 @@ st.subheader("Prompt AI decisionale")
 art = st.selectbox("Seleziona articolo", metrics["articolo"].astype(str))
 row = metrics[metrics["articolo"].astype(str)==art].iloc[0]
 st.text_area("Prompt pronto", genera_prompt(row, year, month, workdays), height=260)
-
